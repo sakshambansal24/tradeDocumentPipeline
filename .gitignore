@@ -12,3 +12,4 @@ dist/
 build/
 nova.db
 node_modules/
+*.tsbuildinfo

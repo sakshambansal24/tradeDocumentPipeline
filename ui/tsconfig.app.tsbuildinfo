@@ -1,1 +1,0 @@
-{"root":["./src/App.tsx","./src/main.tsx","./src/vite-env.d.ts","./src/api/client.ts","./src/api/types.ts","./src/components/DecisionCard.tsx","./src/components/ExtractionTable.tsx","./src/components/QueryPanel.tsx","./src/components/RunTimeline.tsx","./src/components/UploadBar.tsx","./src/components/ValidationTable.tsx"],"version":"5.9.3"}
