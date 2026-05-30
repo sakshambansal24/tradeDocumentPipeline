@@ -1,0 +1,52 @@
+[build-system]
+requires = ["setuptools==80.9.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "nova-doc-pipeline"
+version = "0.1.0"
+description = "Multi-agent trade-document pipeline foundation for GoComet Nova."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi==0.136.3", # API layer when the POC endpoint is added.
+    "uvicorn==0.48.0", # Local ASGI server for FastAPI.
+    "pydantic==2.13.4", # Strict handoff contracts between agents.
+    "pydantic-settings==2.14.1", # Typed env-based configuration.
+    "langgraph==1.2.2", # Stateful orchestration for agent handoffs.
+    "openai==2.38.0", # Primary vision and non-vision LLM provider.
+    "google-genai==2.7.0", # Vision fallback provider.
+    "langfuse==4.7.1", # LLM tracing, latency, cost, and confidence observability.
+    "python-dotenv==1.2.2", # Local environment loading.
+    "sqlalchemy==2.0.50", # SQLite persistence with a path to Postgres later.
+    "pypdfium2==5.8.0", # PDF rasterization without Poppler system dependencies.
+    "pillow==12.2.0", # Image loading, normalization, resizing, and encoding.
+    "numpy==2.4.6", # Cheap page quality signals from image arrays.
+    "pytesseract==0.3.13", # OCR-only grounding check for extracted source snippets.
+    "PyYAML==6.0.3", # Declarative customer rule files.
+    "rapidfuzz==3.14.5", # Fast fuzzy matching before LLM adjudication.
+    "python-multipart==0.0.29", # FastAPI multipart uploads for document files.
+    "reportlab==4.5.1", # Programmatic generation of sample trade-document PDFs.
+    "structlog==25.5.0", # Structured JSON logs with run/stage/customer context.
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest==9.0.3",
+    "ruff==0.15.15",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]

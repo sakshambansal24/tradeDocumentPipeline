@@ -1,0 +1,113 @@
+{
+  "generated_at": "2026-05-30T16:08:33.509182+00:00",
+  "extraction": {
+    "mode": "fixture",
+    "document_count": 5,
+    "per_field": {
+      "consignee_name": {
+        "accuracy": 0.6,
+        "fuzzy_accuracy": 1.0,
+        "hallucinations": 0,
+        "misses": 0,
+        "total": 5
+      },
+      "hs_code": {
+        "accuracy": 0.6,
+        "fuzzy_accuracy": 0.6,
+        "hallucinations": 0,
+        "misses": 0,
+        "total": 5
+      },
+      "port_of_loading": {
+        "accuracy": 0.6,
+        "fuzzy_accuracy": 0.6,
+        "hallucinations": 0,
+        "misses": 2,
+        "total": 5
+      },
+      "port_of_discharge": {
+        "accuracy": 1.0,
+        "fuzzy_accuracy": 1.0,
+        "hallucinations": 0,
+        "misses": 0,
+        "total": 5
+      },
+      "incoterms": {
+        "accuracy": 1.0,
+        "fuzzy_accuracy": 1.0,
+        "hallucinations": 0,
+        "misses": 0,
+        "total": 5
+      },
+      "description_of_goods": {
+        "accuracy": 0.6,
+        "fuzzy_accuracy": 1.0,
+        "hallucinations": 0,
+        "misses": 0,
+        "total": 5
+      },
+      "gross_weight": {
+        "accuracy": 0.6,
+        "fuzzy_accuracy": 0.6,
+        "hallucinations": 0,
+        "misses": 0,
+        "total": 5
+      },
+      "invoice_number": {
+        "accuracy": 0.6,
+        "fuzzy_accuracy": 0.6,
+        "hallucinations": 0,
+        "misses": 0,
+        "total": 5
+      }
+    },
+    "hallucination_rate": 0.0,
+    "miss_rate": 0.0526,
+    "mean_confidence_correct": 0.9429,
+    "mean_confidence_incorrect": 0.806,
+    "confidence_delta": 0.1369
+  },
+  "decision": {
+    "document_count": 5,
+    "passed": 5,
+    "failed": 0,
+    "accuracy": 1.0,
+    "cases": [
+      {
+        "doc_id": "acme_clean_001",
+        "expected": "AUTO_APPROVE",
+        "actual": "AUTO_APPROVE",
+        "passed": true,
+        "risk_flags": []
+      },
+      {
+        "doc_id": "acme_messy_001",
+        "expected": "AMEND",
+        "actual": "AMEND",
+        "passed": true,
+        "risk_flags": []
+      },
+      {
+        "doc_id": "acme_clean_002",
+        "expected": "AUTO_APPROVE",
+        "actual": "AUTO_APPROVE",
+        "passed": true,
+        "risk_flags": []
+      },
+      {
+        "doc_id": "acme_messy_002",
+        "expected": "AMEND",
+        "actual": "AMEND",
+        "passed": true,
+        "risk_flags": []
+      },
+      {
+        "doc_id": "acme_clean_003",
+        "expected": "AUTO_APPROVE",
+        "actual": "AUTO_APPROVE",
+        "passed": true,
+        "risk_flags": []
+      }
+    ]
+  }
+}

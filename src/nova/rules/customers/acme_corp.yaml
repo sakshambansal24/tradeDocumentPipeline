@@ -1,0 +1,51 @@
+customer_id: acme_corp
+version: "2026-05-30"
+fields:
+  consignee_name:
+    type: exact
+    value: "ACME Corporation Pvt Ltd"
+    case_insensitive: true
+    trim: true
+  incoterms:
+    type: allowed_values
+    values:
+      - FOB
+      - CIF
+      - DAP
+    case_insensitive: true
+    trim: true
+  hs_code:
+    type: regex
+    pattern: "^\\d{6,10}$"
+  gross_weight:
+    type: numeric_range
+    min_kg: 100
+    max_kg: 25000
+  invoice_number:
+    type: presence
+    required: true
+  port_of_loading:
+    type: presence
+    required: true
+  port_of_discharge:
+    type: presence
+    required: true
+  description_of_goods:
+    type: presence
+    required: true
+cross_field_rules:
+  - name: india_loading_requires_8_digit_hs_code
+    if:
+      field: port_of_loading
+      operator: in
+      values:
+        - IN
+        - India
+        - Nhava Sheva
+        - Mundra
+        - Chennai
+    then:
+      field: hs_code
+      length: 8
+      pattern: "^\\d{8}$"
+      reason: "If port_of_loading is in India, hs_code must be exactly 8 digits."
