@@ -87,6 +87,7 @@ class PipelineRunRepository:
         existing.customer_id = run.customer_id
         existing.status = run.status.value
         existing.decision = decision_value
+        existing.decision_details = decision.model_dump(mode="json") if decision is not None else None
         existing.started_at = run.started_at
         existing.completed_at = run.completed_at
         existing.cost_total_usd = run.cost_total_usd
@@ -162,6 +163,8 @@ class PipelineRunRepository:
     def _save_decision(self, state: "PipelineState", *, validation_id: str | None) -> str | None:
         decision = state.get("router_decision")
         if decision is None or validation_id is None:
+            # Decision is already stored in PipelineRunRecord.decision_details
+            # Only save to Decision table if validation exists (for relational integrity)
             return None
 
         decision_id = f"{validation_id}:{decision.decision.value}"
@@ -182,7 +185,20 @@ class PipelineRunRepository:
 def pipeline_run_from_record(record: PipelineRunRecord) -> PipelineRun:
     extraction = record.document.extractions[-1] if record.document.extractions else None
     validation = extraction.validations[-1] if extraction and extraction.validations else None
-    decision = validation.decisions[-1] if validation and validation.decisions else None
+
+    # Router decision: prefer decision_details (always present), fallback to Decision table
+    router_decision = None
+    if record.decision_details is not None:
+        router_decision = RouterDecision.model_validate(record.decision_details)
+    elif validation and validation.decisions:
+        decision = validation.decisions[-1]
+        router_decision = RouterDecision(
+            decision=decision.decision,
+            reasoning=decision.reasoning,
+            drafted_message=decision.drafted_message,
+            risk_flags=decision.risk_flags,
+        )
+
     return PipelineRun(
         run_id=record.run_id,
         document_id=record.document_id,
@@ -208,16 +224,7 @@ def pipeline_run_from_record(record: PipelineRunRecord) -> PipelineRun:
             if validation is not None
             else None
         ),
-        router_decision=(
-            RouterDecision(
-                decision=decision.decision,
-                reasoning=decision.reasoning,
-                drafted_message=decision.drafted_message,
-                risk_flags=decision.risk_flags,
-            )
-            if decision is not None
-            else None
-        ),
+        router_decision=router_decision,
     )
 
 

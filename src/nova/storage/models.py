@@ -90,6 +90,7 @@ class PipelineRunRecord(Base):
     customer_id: Mapped[str] = mapped_column(String, nullable=False)
     status: Mapped[str] = mapped_column(String, nullable=False)
     decision: Mapped[str | None] = mapped_column(String, nullable=True)
+    decision_details: Mapped[dict | None] = mapped_column(JSON, nullable=True)  # Full RouterDecision object
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     cost_total_usd: Mapped[float] = mapped_column(Float, nullable=False)

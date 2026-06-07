@@ -11,15 +11,27 @@ const LABELS: Record<StageName, string> = {
   QUERY: "Query"
 };
 
-function stageStatus(run: PipelineRun | null, stage: StageName): StageStatus | "PENDING" {
+function stageStatus(run: PipelineRun | null, stage: StageName): StageStatus | "PENDING" | "SKIPPED" {
   const event = run?.stages.find((item) => item.stage === stage);
-  return event?.status ?? "PENDING";
+  if (event) return event.status;
+
+  // Validation can be skipped when quality gate triggers early handoff
+  if (stage === "VALIDATION" && run) {
+    const hasExtraction = run.stages.some((s) => s.stage === "EXTRACTION");
+    const hasRouting = run.stages.some((s) => s.stage === "ROUTING");
+    if (hasExtraction && hasRouting) {
+      return "SKIPPED";  // Extraction completed, routing happened, validation was skipped
+    }
+  }
+
+  return "PENDING";
 }
 
-function pillClass(status: StageStatus | "PENDING") {
+function pillClass(status: StageStatus | "PENDING" | "SKIPPED") {
   if (status === "COMPLETED") return "bg-green-100 text-green-800";
   if (status === "FAILED") return "bg-red-100 text-red-800";
   if (status === "RUNNING") return "bg-yellow-100 text-yellow-800";
+  if (status === "SKIPPED") return "bg-blue-100 text-blue-800";
   return "bg-neutral-200 text-neutral-700";
 }
 
