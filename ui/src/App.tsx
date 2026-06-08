@@ -54,6 +54,8 @@ export function App() {
   });
 
   const visibleRun = runQuery.data ?? lastRun;
+  const extractionIsPending =
+    visibleRun?.status === "PENDING" || visibleRun?.status === "RUNNING";
 
   return (
     <main className="mx-auto max-w-7xl p-4 md:p-6">
@@ -88,7 +90,10 @@ export function App() {
           ) : null}
 
           <RunTimeline run={visibleRun ?? null} />
-          <ExtractionTable extraction={visibleRun?.extraction_result} />
+          <ExtractionTable
+            extraction={visibleRun?.extraction_result}
+            isPending={extractionIsPending}
+          />
           <ValidationTable validation={visibleRun?.validation_result} />
           <DecisionCard decision={visibleRun?.router_decision} />
         </div>
