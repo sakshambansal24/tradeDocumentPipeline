@@ -9,7 +9,7 @@ from nova.api.app import create_app
 from nova.api.dependencies import get_query_agent, get_runner
 from nova.query import QueryAgent
 from nova.schemas.pipeline import PipelineRun, PipelineRunStatus, StageEvent, StageName, StageStatus
-from nova.schemas.query import QueryPlan, QueryToolCall
+from nova.schemas.query import SqlQueryPlan
 from nova.storage import PipelineRunRepository, init_db, session_scope
 
 
@@ -47,11 +47,19 @@ class FakeRunner:
 
 
 class StaticPlanner:
-    def __init__(self, plan: QueryPlan) -> None:
+    def __init__(self, plan: SqlQueryPlan) -> None:
         self._plan = plan
 
-    def plan(self, question: str) -> QueryPlan:
+    def plan(self, question: str) -> SqlQueryPlan:
         return self._plan
+
+
+class StaticSummarizer:
+    def __init__(self, answer: str) -> None:
+        self.answer = answer
+
+    def summarize(self, *, question: str, sql: str, rows: list[dict]) -> str:
+        return self.answer
 
 
 def test_post_runs_upload_returns_run_and_get_is_queryable(tmp_path) -> None:
@@ -81,16 +89,8 @@ def test_post_query_returns_actual_stored_count(tmp_path) -> None:
     session_factory = init_db(f"sqlite:///{tmp_path / 'api-query.db'}")
     app.dependency_overrides[get_query_agent] = lambda: QueryAgent(
         session_factory=session_factory,
-        planner=StaticPlanner(
-            QueryPlan(
-                tool_calls=[
-                    QueryToolCall(
-                        name="count_runs",
-                        args={"filters": {}},
-                    )
-                ]
-            )
-        ),
+        planner=StaticPlanner(SqlQueryPlan(sql="SELECT COUNT(*) AS count FROM pipeline_runs")),
+        summarizer=StaticSummarizer("There are 2 runs total."),
     )
     with session_scope(session_factory) as session:
         repo = PipelineRunRepository(session)
@@ -104,8 +104,9 @@ def test_post_query_returns_actual_stored_count(tmp_path) -> None:
     assert response.status_code == 200
     body = response.json()
     assert "2" in body["answer"]
-    assert body["evidence"]["tool_calls"][0]["tool_name"] == "count_runs"
-    assert body["evidence"]["tool_calls"][0]["result"] == 2
+    assert body["evidence"]["sql"] == "SELECT COUNT(*) AS count FROM pipeline_runs LIMIT 100"
+    assert body["evidence"]["rows"] == [{"count": 2}]
+    assert body["evidence"]["row_count"] == 1
 
 
 def _run(customer_id: str) -> PipelineRun:

@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import Any, Literal
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -94,43 +94,18 @@ class TopFailingField(BaseModel):
     mismatch_count: int = Field(ge=0)
 
 
-class QueryToolCall(BaseModel):
+class SqlQueryPlan(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    name: Literal[
-        "count_runs",
-        "list_runs",
-        "get_run_detail",
-        "count_field_validations",
-        "top_failing_fields",
-    ]
-    args: (
-        CountRunsArgs
-        | ListRunsArgs
-        | GetRunDetailArgs
-        | CountFieldValidationsArgs
-        | TopFailingFieldsArgs
-    )
-
-
-class QueryPlan(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    tool_calls: list[QueryToolCall]
-
-
-class QueryEvidenceItem(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    tool_name: str
-    args: dict[str, Any]
-    result: Any
+    sql: str = Field(min_length=1)
 
 
 class QueryEvidence(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    tool_calls: list[QueryEvidenceItem]
+    sql: str
+    rows: list[dict[str, Any]]
+    row_count: int = Field(ge=0)
 
 
 class QueryAnswer(BaseModel):

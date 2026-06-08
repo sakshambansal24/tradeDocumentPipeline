@@ -1,12 +1,15 @@
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
-from nova.query import QueryAgent
+import pytest
+
+from nova.query import QueryAgent, QueryAgentError
+from nova.query.query_agent import SQL_SYSTEM_PROMPT, SUMMARY_SYSTEM_PROMPT, validate_sql
 from nova.schemas.decision import DecisionType, RouterDecision
 from nova.schemas.extraction import DocumentType, ExtractedField, ExtractionResult
 from nova.schemas.ingestion import LoadedDocument, PageImage
 from nova.schemas.pipeline import PipelineRun, PipelineRunStatus, StageEvent, StageName, StageStatus
-from nova.schemas.query import QueryPlan, QueryToolCall
+from nova.schemas.query import SqlQueryPlan
 from nova.schemas.validation import (
     FieldValidation,
     FieldValidationStatus,
@@ -16,14 +19,26 @@ from nova.schemas.validation import (
 from nova.storage import PipelineRunRepository, init_db, session_scope
 
 
-class FakePlanner:
-    def __init__(self, plan: QueryPlan) -> None:
-        self.plan = plan
-        self.questions: list[str] = []
+def test_sql_prompt_exposes_db_keys_and_rule_values() -> None:
+    assert "pipeline_runs(id, run_id, document_id" in SQL_SYSTEM_PROMPT
+    assert "validations.field_results item has keys" in SQL_SYSTEM_PROMPT
+    assert "field_name, status, found_value, expected_value" in SQL_SYSTEM_PROMPT
+    assert "AUTO_APPROVE, HUMAN_REVIEW, AMEND" in SQL_SYSTEM_PROMPT
+    assert "MATCH, MISMATCH, UNCERTAIN, MISSING" in SQL_SYSTEM_PROMPT
+    assert "consignee_name, hs_code, port_of_loading" in SQL_SYSTEM_PROMPT
+    assert "FOB, CIF, DAP" in SQL_SYSTEM_PROMPT
+    assert "ACME Corporation Pvt Ltd" in SQL_SYSTEM_PROMPT
 
-    def plan(self, question: str) -> QueryPlan:
-        self.questions.append(question)
-        return self.plan
+
+def test_summary_prompt_translates_enum_values_to_user_language() -> None:
+    assert "AUTO_APPROVE -> auto approved" in SUMMARY_SYSTEM_PROMPT
+    assert "HUMAN_REVIEW -> sent to human review" in SUMMARY_SYSTEM_PROMPT
+    assert "AMEND -> amendment required" in SUMMARY_SYSTEM_PROMPT
+
+
+def test_query_rejects_common_hallucinated_domain_values() -> None:
+    with pytest.raises(QueryAgentError, match="unsupported domain value APPROVED"):
+        validate_sql("SELECT COUNT(*) FROM pipeline_runs WHERE decision = 'APPROVED'")
 
 
 def test_query_counts_amendments_this_week_with_evidence(tmp_path) -> None:
@@ -41,32 +56,25 @@ def test_query_counts_amendments_this_week_with_evidence(tmp_path) -> None:
     agent = QueryAgent(
         session_factory=session_factory,
         planner=StaticPlanner(
-            QueryPlan(
-                tool_calls=[
-                    QueryToolCall(
-                        name="count_runs",
-                        args={
-                            "filters": {
-                                "decision": "AMEND",
-                                "date_from": date_from,
-                                "date_to": date_to,
-                            }
-                        },
-                    )
-                ]
+            SqlQueryPlan(
+                sql=(
+                    "SELECT COUNT(*) AS count "
+                    "FROM pipeline_runs "
+                    "WHERE decision = 'AMEND' "
+                    f"AND completed_at >= '{date_from.isoformat()}' "
+                    f"AND completed_at <= '{date_to.isoformat()}'"
+                )
             )
         ),
+        summarizer=StaticSummarizer("There was 1 amendment this week."),
     )
 
     answer = agent.ask("How many shipments were flagged for amendment this week?")
 
     assert "1" in answer.answer
-    evidence = answer.evidence.tool_calls[0]
-    assert evidence.tool_name == "count_runs"
-    assert evidence.args["filters"]["decision"] == "AMEND"
-    assert evidence.args["filters"]["date_from"] == date_from
-    assert evidence.args["filters"]["date_to"] == date_to
-    assert evidence.result == 1
+    assert "FROM pipeline_runs" in answer.evidence.sql
+    assert answer.evidence.rows == [{"count": 1}]
+    assert answer.evidence.row_count == 1
 
 
 def test_query_top_rejection_reason_filters_to_customer(tmp_path) -> None:
@@ -100,28 +108,27 @@ def test_query_top_rejection_reason_filters_to_customer(tmp_path) -> None:
     agent = QueryAgent(
         session_factory=session_factory,
         planner=StaticPlanner(
-            QueryPlan(
-                tool_calls=[
-                    QueryToolCall(
-                        name="top_failing_fields",
-                        args={
-                            "customer_id": "acme_corp",
-                            "date_from": date_from,
-                            "date_to": date_to,
-                            "limit": 5,
-                        },
-                    )
-                ]
+            SqlQueryPlan(
+                sql=(
+                    "SELECT json_extract(field.value, '$.field_name') AS field_name, "
+                    "COUNT(*) AS mismatch_count "
+                    "FROM validations, json_each(validations.field_results) AS field "
+                    "WHERE validations.customer_id = 'acme_corp' "
+                    f"AND validations.created_at >= '{date_from.isoformat()}' "
+                    f"AND validations.created_at <= '{date_to.isoformat()}' "
+                    "AND json_extract(field.value, '$.status') IN ('MISMATCH', 'MISSING') "
+                    "GROUP BY field_name "
+                    "ORDER BY mismatch_count DESC "
+                    "LIMIT 5"
+                )
             )
         ),
+        summarizer=StaticSummarizer("The top failing field is hs_code."),
     )
 
     answer = agent.ask("What's the top reason ACME documents get rejected?")
 
-    evidence = answer.evidence.tool_calls[0]
-    assert evidence.tool_name == "top_failing_fields"
-    assert evidence.args["customer_id"] == "acme_corp"
-    assert evidence.result == [{"field_name": "hs_code", "mismatch_count": 1}]
+    assert answer.evidence.rows == [{"field_name": "hs_code", "mismatch_count": 1}]
     assert "hs_code" in answer.answer
 
 
@@ -144,35 +151,44 @@ def test_query_normalizes_customer_name_to_configured_customer_id(tmp_path) -> N
     agent = QueryAgent(
         session_factory=session_factory,
         planner=StaticPlanner(
-            QueryPlan(
-                tool_calls=[
-                    QueryToolCall(
-                        name="top_failing_fields",
-                        args={
-                            "customer_id": "acme",
-                            "date_from": now - timedelta(days=1),
-                            "date_to": now + timedelta(days=1),
-                            "limit": 5,
-                        },
-                    )
-                ]
+            SqlQueryPlan(
+                sql=(
+                    "SELECT json_extract(field.value, '$.field_name') AS field_name, "
+                    "COUNT(*) AS mismatch_count "
+                    "FROM validations, json_each(validations.field_results) AS field "
+                    "WHERE validations.customer_id = 'acme_corp' "
+                    f"AND validations.created_at >= '{(now - timedelta(days=1)).isoformat()}' "
+                    f"AND validations.created_at <= '{(now + timedelta(days=1)).isoformat()}' "
+                    "AND json_extract(field.value, '$.status') IN ('MISMATCH', 'MISSING') "
+                    "GROUP BY field_name "
+                    "ORDER BY mismatch_count DESC "
+                    "LIMIT 5"
+                )
             )
         ),
+        summarizer=StaticSummarizer("The top failing field is hs_code."),
     )
 
     answer = agent.ask("What is the top reason ACME documents got rejected?")
 
-    evidence = answer.evidence.tool_calls[0]
-    assert evidence.result == [{"field_name": "hs_code", "mismatch_count": 1}]
+    assert answer.evidence.rows == [{"field_name": "hs_code", "mismatch_count": 1}]
     assert "hs_code" in answer.answer
 
 
 class StaticPlanner:
-    def __init__(self, plan: QueryPlan) -> None:
+    def __init__(self, plan: SqlQueryPlan) -> None:
         self._plan = plan
 
-    def plan(self, question: str) -> QueryPlan:
+    def plan(self, question: str) -> SqlQueryPlan:
         return self._plan
+
+
+class StaticSummarizer:
+    def __init__(self, answer: str) -> None:
+        self.answer = answer
+
+    def summarize(self, *, question: str, sql: str, rows: list[dict]) -> str:
+        return self.answer
 
 
 def _run(*, customer_id: str, completed_at: datetime) -> PipelineRun:
