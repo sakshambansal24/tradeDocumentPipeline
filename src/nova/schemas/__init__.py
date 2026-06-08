@@ -2,7 +2,7 @@ from nova.schemas.decision import DecisionType, RouterDecision
 from nova.schemas.extraction import DocumentType, ExtractedField, ExtractionResult
 from nova.schemas.ingestion import LoadedDocument, PageImage
 from nova.schemas.pipeline import PipelineRun, PipelineRunStatus, StageEvent, StageName, StageStatus
-from nova.schemas.query import QueryAnswer, QueryEvidence, QueryEvidenceItem
+from nova.schemas.query import QueryAnswer, QueryEvidence, SqlQueryPlan
 from nova.schemas.rules import CustomerRuleSet, FieldRule, RuleType
 from nova.schemas.validation import (
     FieldValidation,
@@ -26,9 +26,9 @@ __all__ = [
     "PipelineRunStatus",
     "QueryAnswer",
     "QueryEvidence",
-    "QueryEvidenceItem",
     "RouterDecision",
     "RuleType",
+    "SqlQueryPlan",
     "StageEvent",
     "StageName",
     "StageStatus",
