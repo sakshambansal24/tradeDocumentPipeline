@@ -10,8 +10,16 @@ from nova.schemas.decision import DecisionType, RouterDecision
 from nova.schemas.extraction import ExtractionResult
 from nova.schemas.ingestion import LoadedDocument
 from nova.schemas.pipeline import PipelineRun, PipelineRunStatus, StageEvent
+from nova.schemas.shipment import CrossValidationResult, Shipment, ShipmentStatus
 from nova.schemas.validation import ValidationResult
-from nova.storage.models import Decision, Document, Extraction, PipelineRunRecord, Validation
+from nova.storage.models import (
+    Decision,
+    Document,
+    Extraction,
+    PipelineRunRecord,
+    ShipmentRecord,
+    Validation,
+)
 
 if TYPE_CHECKING:
     from nova.orchestration.state import PipelineState
@@ -22,6 +30,14 @@ class RunFilters:
     customer_id: str | None = None
     decision: DecisionType | None = None
     status: PipelineRunStatus | None = None
+    date_from: datetime | None = None
+    date_to: datetime | None = None
+
+
+@dataclass(frozen=True)
+class ShipmentFilters:
+    customer_id: str | None = None
+    status: ShipmentStatus | None = None
     date_from: datetime | None = None
     date_to: datetime | None = None
 
@@ -57,6 +73,8 @@ class PipelineRunRepository:
         *,
         state: "PipelineState | None" = None,
     ) -> PipelineRunRecord:
+        extraction_id = None
+        validation_id = None
         if state is not None and state.get("loaded_document") is not None:
             self.documents.save(state["loaded_document"])
             extraction_id = self._save_extraction(state)
@@ -76,7 +94,7 @@ class PipelineRunRepository:
         existing = self.session.scalar(
             select(PipelineRunRecord).where(PipelineRunRecord.run_id == str(run.run_id))
         )
-        decision = state.get("router_decision") if state is not None else None
+        decision = state.get("router_decision") if state is not None else run.router_decision
         decision_value = decision.decision.value if decision is not None else None
         stage_history = [stage.model_dump(mode="json") for stage in run.stages]
 
@@ -85,9 +103,15 @@ class PipelineRunRepository:
             self.session.add(existing)
 
         existing.customer_id = run.customer_id
+        existing.source_filename = run.source_filename
         existing.status = run.status.value
         existing.decision = decision_value
-        existing.decision_details = decision.model_dump(mode="json") if decision is not None else None
+        existing.decision_details = (
+            decision.model_dump(mode="json") if decision is not None else None
+        )
+        if state is not None:
+            existing.extraction_id = extraction_id
+            existing.validation_id = validation_id
         existing.started_at = run.started_at
         existing.completed_at = run.completed_at
         existing.cost_total_usd = run.cost_total_usd
@@ -182,9 +206,82 @@ class PipelineRunRepository:
         return decision_id
 
 
+class ShipmentRepository:
+    def __init__(self, session: Session) -> None:
+        self.session = session
+        self.runs = PipelineRunRepository(session)
+
+    def save_shipment(self, shipment: Shipment) -> ShipmentRecord:
+        existing = self.session.get(ShipmentRecord, str(shipment.shipment_id))
+        if existing is None:
+            existing = ShipmentRecord(shipment_id=str(shipment.shipment_id))
+            self.session.add(existing)
+
+        existing.email_id = shipment.email_id
+        existing.customer_id = shipment.customer_id
+        existing.triggered_by = shipment.triggered_by
+        existing.recipient = shipment.recipient
+        existing.subject = shipment.subject
+        existing.original_message_id = shipment.original_message_id
+        existing.references = shipment.references
+        existing.reply_message_id = shipment.reply_message_id
+        existing.reply_mail_path = shipment.reply_mail_path
+        existing.triggered_at = shipment.triggered_at
+        existing.status = shipment.status.value
+        existing.cross_validation_result = (
+            shipment.cross_validation_result.model_dump(mode="json")
+            if shipment.cross_validation_result is not None
+            else None
+        )
+        existing.overall_decision = (
+            shipment.overall_decision.model_dump(mode="json")
+            if shipment.overall_decision is not None
+            else None
+        )
+        existing.draft_reply = shipment.draft_reply
+        existing.completed_at = shipment.completed_at
+
+        for run in shipment.document_runs:
+            run_record = self.runs.save_run(run)
+            run_record.shipment_id = str(shipment.shipment_id)
+
+        return existing
+
+    def get_shipment(self, shipment_id: str) -> Shipment:
+        record = self.session.get(ShipmentRecord, shipment_id)
+        if record is None:
+            raise LookupError(f"Shipment not found: {shipment_id}")
+        return shipment_from_record(record)
+
+    def delete_shipment(self, shipment_id: str) -> None:
+        record = self.session.get(ShipmentRecord, shipment_id)
+        if record is None:
+            raise LookupError(f"Shipment not found: {shipment_id}")
+        for run_record in record.document_runs:
+            run_record.shipment_id = None
+        self.session.delete(record)
+
+    def list_shipments(self, filters: ShipmentFilters) -> list[Shipment]:
+        query: Select[tuple[ShipmentRecord]] = select(ShipmentRecord)
+        if filters.customer_id is not None:
+            query = query.where(ShipmentRecord.customer_id == filters.customer_id)
+        if filters.status is not None:
+            query = query.where(ShipmentRecord.status == filters.status.value)
+        if filters.date_from is not None:
+            query = query.where(ShipmentRecord.triggered_at >= filters.date_from)
+        if filters.date_to is not None:
+            query = query.where(ShipmentRecord.triggered_at <= filters.date_to)
+        query = query.order_by(ShipmentRecord.triggered_at.desc())
+        return [shipment_from_record(record) for record in self.session.scalars(query).all()]
+
+
 def pipeline_run_from_record(record: PipelineRunRecord) -> PipelineRun:
-    extraction = record.document.extractions[-1] if record.document.extractions else None
-    validation = extraction.validations[-1] if extraction and extraction.validations else None
+    extraction = record.extraction
+    if extraction is None and record.document.extractions:
+        extraction = record.document.extractions[-1]
+    validation = record.validation
+    if validation is None and extraction and extraction.validations:
+        validation = extraction.validations[-1]
 
     # Router decision: prefer decision_details (always present), fallback to Decision table
     router_decision = None
@@ -202,6 +299,7 @@ def pipeline_run_from_record(record: PipelineRunRecord) -> PipelineRun:
     return PipelineRun(
         run_id=record.run_id,
         document_id=record.document_id,
+        source_filename=record.source_filename or record.document.filename,
         customer_id=record.customer_id,
         status=record.status,
         stages=[StageEvent.model_validate(stage) for stage in record.stage_history],
@@ -225,6 +323,37 @@ def pipeline_run_from_record(record: PipelineRunRecord) -> PipelineRun:
             else None
         ),
         router_decision=router_decision,
+    )
+
+
+def shipment_from_record(record: ShipmentRecord) -> Shipment:
+    document_runs = sorted(record.document_runs, key=lambda run: run.started_at)
+    return Shipment(
+        shipment_id=record.shipment_id,
+        email_id=record.email_id,
+        customer_id=record.customer_id,
+        triggered_by=record.triggered_by,
+        recipient=record.recipient,
+        subject=record.subject,
+        original_message_id=record.original_message_id,
+        references=record.references,
+        reply_message_id=record.reply_message_id,
+        reply_mail_path=record.reply_mail_path,
+        triggered_at=record.triggered_at,
+        status=record.status,
+        document_runs=[pipeline_run_from_record(run) for run in document_runs],
+        cross_validation_result=(
+            CrossValidationResult.model_validate(record.cross_validation_result)
+            if record.cross_validation_result is not None
+            else None
+        ),
+        overall_decision=(
+            RouterDecision.model_validate(record.overall_decision)
+            if record.overall_decision is not None
+            else None
+        ),
+        draft_reply=record.draft_reply,
+        completed_at=record.completed_at,
     )
 
 

@@ -1,4 +1,4 @@
-import type { FieldValidationStatus, ValidationResult } from "../api/types";
+import type { FieldValidation, FieldValidationStatus, ValidationResult } from "../api/types";
 
 function statusClass(status: FieldValidationStatus) {
   if (status === "MATCH") return "bg-green-100 text-green-800";
@@ -6,7 +6,13 @@ function statusClass(status: FieldValidationStatus) {
   return "bg-red-100 text-red-800";
 }
 
-export function ValidationTable({ validation }: { validation?: ValidationResult | null }) {
+export function ValidationTable({
+  validation,
+  onFieldClick
+}: {
+  validation?: ValidationResult | null;
+  onFieldClick?: (field: FieldValidation) => void;
+}) {
   return (
     <section className="rounded-lg border border-neutral-200 bg-white p-4 shadow-sm">
       <div className="mb-3 flex items-center justify-between">
@@ -34,7 +40,11 @@ export function ValidationTable({ validation }: { validation?: ValidationResult 
             </thead>
             <tbody className="divide-y divide-neutral-100">
               {validation.field_results.map((field) => (
-                <tr key={`${field.field_name}-${field.expected_rule}`}>
+                <tr
+                  key={`${field.field_name}-${field.expected_rule}`}
+                  className={onFieldClick ? "cursor-pointer hover:bg-neutral-50" : undefined}
+                  onClick={() => onFieldClick?.(field)}
+                >
                   <td className="py-3 pr-4 font-medium">{field.field_name}</td>
                   <td className="py-3 pr-4">
                     <span className={`rounded-full px-2 py-1 text-xs ${statusClass(field.status)}`}>
