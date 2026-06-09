@@ -66,6 +66,7 @@ class PipelineRun(BaseModel):
 
     run_id: UUID
     document_id: str
+    source_filename: str | None = None
     customer_id: str
     status: PipelineRunStatus
     stages: list[StageEvent]
@@ -77,10 +78,10 @@ class PipelineRun(BaseModel):
     validation_result: ValidationResult | None = None
     router_decision: RouterDecision | None = None
 
-    @field_validator("document_id", "customer_id", "trace_id")
+    @field_validator("document_id", "customer_id", "trace_id", "source_filename")
     @classmethod
-    def require_non_empty_text(cls, value: str) -> str:
-        if not value.strip():
+    def require_non_empty_text(cls, value: str | None) -> str | None:
+        if value is not None and not value.strip():
             raise ValueError("must be non-empty")
         return value
 

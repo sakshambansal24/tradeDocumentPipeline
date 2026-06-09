@@ -4,6 +4,13 @@ from nova.schemas.ingestion import LoadedDocument, PageImage
 from nova.schemas.pipeline import PipelineRun, PipelineRunStatus, StageEvent, StageName, StageStatus
 from nova.schemas.query import QueryAnswer, QueryEvidence, SqlQueryPlan
 from nova.schemas.rules import CustomerRuleSet, FieldRule, RuleType
+from nova.schemas.shipment import (
+    CrossFieldMatch,
+    CrossFieldStatus,
+    CrossValidationResult,
+    Shipment,
+    ShipmentStatus,
+)
 from nova.schemas.validation import (
     FieldValidation,
     FieldValidationStatus,
@@ -15,6 +22,9 @@ __all__ = [
     "DecisionType",
     "DocumentType",
     "CustomerRuleSet",
+    "CrossFieldMatch",
+    "CrossFieldStatus",
+    "CrossValidationResult",
     "ExtractedField",
     "ExtractionResult",
     "FieldValidation",
@@ -28,6 +38,8 @@ __all__ = [
     "QueryEvidence",
     "RouterDecision",
     "RuleType",
+    "Shipment",
+    "ShipmentStatus",
     "SqlQueryPlan",
     "StageEvent",
     "StageName",

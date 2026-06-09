@@ -76,21 +76,66 @@ class Decision(Base):
     validation: Mapped[Validation] = relationship(back_populates="decisions")
 
 
+class ShipmentRecord(Base):
+    __tablename__ = "shipments"
+    __table_args__ = (
+        Index("ix_shipments_customer_status", "customer_id", "status"),
+        Index("ix_shipments_triggered_at", "triggered_at"),
+        Index("ix_shipments_email_id", "email_id"),
+    )
+
+    shipment_id: Mapped[str] = mapped_column(String, primary_key=True)
+    email_id: Mapped[str] = mapped_column(String, nullable=False)
+    customer_id: Mapped[str] = mapped_column(String, nullable=False)
+    triggered_by: Mapped[str | None] = mapped_column(String, nullable=True)
+    recipient: Mapped[str | None] = mapped_column(String, nullable=True)
+    subject: Mapped[str | None] = mapped_column(String, nullable=True)
+    original_message_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    references: Mapped[list[str]] = mapped_column(
+        "email_references",
+        JSON,
+        nullable=False,
+        default=list,
+    )
+    reply_message_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    reply_mail_path: Mapped[str | None] = mapped_column(String, nullable=True)
+    triggered_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    status: Mapped[str] = mapped_column(String, nullable=False)
+    cross_validation_result: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    overall_decision: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    draft_reply: Mapped[str | None] = mapped_column(Text, nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    document_runs: Mapped[list["PipelineRunRecord"]] = relationship(back_populates="shipment")
+
+
 class PipelineRunRecord(Base):
     __tablename__ = "pipeline_runs"
     __table_args__ = (
         Index("ix_pipeline_runs_customer_decision", "customer_id", "decision"),
         Index("ix_pipeline_runs_status_completed_at", "status", "completed_at"),
         Index("ix_pipeline_runs_document_id", "document_id"),
+        Index("ix_pipeline_runs_shipment_id", "shipment_id"),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     run_id: Mapped[str] = mapped_column(String, nullable=False, unique=True)
     document_id: Mapped[str] = mapped_column(ForeignKey("documents.id"), nullable=False)
+    shipment_id: Mapped[str | None] = mapped_column(
+        ForeignKey("shipments.shipment_id"), nullable=True
+    )
     customer_id: Mapped[str] = mapped_column(String, nullable=False)
+    source_filename: Mapped[str | None] = mapped_column(String, nullable=True)
     status: Mapped[str] = mapped_column(String, nullable=False)
     decision: Mapped[str | None] = mapped_column(String, nullable=True)
-    decision_details: Mapped[dict | None] = mapped_column(JSON, nullable=True)  # Full RouterDecision object
+    # Full RouterDecision object for document-level routing output.
+    decision_details: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    extraction_id: Mapped[str | None] = mapped_column(
+        ForeignKey("extractions.id"), nullable=True
+    )
+    validation_id: Mapped[str | None] = mapped_column(
+        ForeignKey("validations.id"), nullable=True
+    )
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     cost_total_usd: Mapped[float] = mapped_column(Float, nullable=False)
@@ -98,6 +143,9 @@ class PipelineRunRecord(Base):
     trace_id: Mapped[str] = mapped_column(String, nullable=False)
 
     document: Mapped[Document] = relationship()
+    extraction: Mapped[Extraction | None] = relationship(foreign_keys=[extraction_id])
+    validation: Mapped[Validation | None] = relationship(foreign_keys=[validation_id])
+    shipment: Mapped[ShipmentRecord | None] = relationship(back_populates="document_runs")
 
 
 class Customer(Base):

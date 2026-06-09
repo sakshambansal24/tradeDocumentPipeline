@@ -150,6 +150,11 @@ class PipelineRunner:
         return PipelineRun(
             run_id=UUID(state["run_id"]),
             document_id=state["document_id"],
+            source_filename=(
+                state["loaded_document"].source_filename
+                if state.get("loaded_document") is not None
+                else None
+            ),
             customer_id=state["customer_id"],
             status=pipeline_status_from_state(state, failed=failed),
             stages=state.get("stage_history", []),

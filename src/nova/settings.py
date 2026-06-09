@@ -26,6 +26,21 @@ class Settings(BaseSettings):
     fallback_vision_model: str = "gemini-1.5-flash"
     non_vision_model: str = "gpt-4.1-mini"
 
+    mail_poll_seconds: float = Field(default=5.0, gt=0.0)
+    mail_inbox_folder: str = "inbox/mail/incoming"
+    mail_processed_folder: str = "inbox/mail/processed"
+    mail_failed_folder: str = "inbox/mail/failed"
+    mail_sent_folder: str = "inbox/mail/sent"
+    mail_attachments_folder: str = "inbox/attachments"
+    reply_delivery_mode: str = "local"
+    smtp_host: str = ""
+    smtp_port: int = Field(default=587, gt=0)
+    smtp_username: str = Field(default="", repr=False)
+    smtp_password: str = Field(default="", repr=False)
+    smtp_from_email: str = "cg@gocomet.local"
+    smtp_starttls: bool = True
+    smtp_timeout_seconds: float = Field(default=20.0, gt=0.0)
+
 
 class RuntimeLimits(BaseSettings):
     model_config = ConfigDict(extra="forbid")

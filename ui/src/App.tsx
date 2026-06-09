@@ -1,7 +1,10 @@
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
+import { BrowserRouter, Link, Route, Routes } from "react-router-dom";
 import { createRun, getCustomers, getRun } from "./api/client";
 import type { PipelineRun } from "./api/types";
+import { ShipmentDetail } from "./cg/ShipmentDetail";
+import { ShipmentInbox } from "./cg/ShipmentInbox";
 import { DecisionCard } from "./components/DecisionCard";
 import { ExtractionTable } from "./components/ExtractionTable";
 import { QueryPanel } from "./components/QueryPanel";
@@ -10,6 +13,18 @@ import { UploadBar } from "./components/UploadBar";
 import { ValidationTable } from "./components/ValidationTable";
 
 export function App() {
+  return (
+    <BrowserRouter>
+      <Routes>
+        <Route path="/" element={<PartOnePipeline />} />
+        <Route path="/cg" element={<ShipmentInbox />} />
+        <Route path="/cg/shipment/:shipment_id" element={<ShipmentDetail />} />
+      </Routes>
+    </BrowserRouter>
+  );
+}
+
+function PartOnePipeline() {
   const [selectedCustomerId, setSelectedCustomerId] = useState("");
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [uploadProgress, setUploadProgress] = useState(0);
@@ -60,14 +75,21 @@ export function App() {
   return (
     <main className="mx-auto max-w-7xl p-4 md:p-6">
       <header className="mb-6">
-        <p className="text-sm font-semibold uppercase tracking-wide text-neutral-500">
-          GoComet Nova POC
-        </p>
-        <h1 className="text-2xl font-bold">Trade-document pipeline</h1>
-        <p className="mt-1 text-sm text-neutral-600">
-          Upload one document, run extraction, validation, routing, persistence, and query the
-          stored result.
-        </p>
+        <div className="flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
+          <div>
+            <p className="text-sm font-semibold uppercase tracking-wide text-neutral-500">
+              GoComet Nova POC
+            </p>
+            <h1 className="text-2xl font-bold">Trade-document pipeline</h1>
+            <p className="mt-1 text-sm text-neutral-600">
+              Upload one document, run extraction, validation, routing, persistence, and query the
+              stored result.
+            </p>
+          </div>
+          <Link className="text-sm font-medium text-blue-700 hover:text-blue-900" to="/cg">
+            Open CG workflow
+          </Link>
+        </div>
       </header>
 
       <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_360px]">

@@ -3,6 +3,8 @@ export type FieldValidationStatus = "MATCH" | "MISMATCH" | "UNCERTAIN" | "MISSIN
 export type ValidationOverallStatus = "PASSED" | "FAILED" | "NEEDS_REVIEW";
 export type DecisionType = "AUTO_APPROVE" | "HUMAN_REVIEW" | "AMEND";
 export type PipelineRunStatus = "PENDING" | "RUNNING" | "COMPLETED" | "FAILED" | "NEEDS_REVIEW";
+export type ShipmentStatus = "PENDING" | "PROCESSING" | "REQUIRES_REVIEW" | "APPROVED" | "AMENDED";
+export type CrossFieldStatus = "CONSISTENT" | "INCONSISTENT" | "INSUFFICIENT_DATA";
 export type StageName = "INGESTION" | "EXTRACTION" | "VALIDATION" | "ROUTING" | "STORAGE" | "QUERY";
 export type StageStatus = "PENDING" | "RUNNING" | "COMPLETED" | "FAILED" | "SKIPPED";
 
@@ -74,6 +76,7 @@ export interface StageEvent {
 export interface PipelineRun {
   run_id: string;
   document_id: string;
+  source_filename?: string | null;
   customer_id: string;
   status: PipelineRunStatus;
   stages: StageEvent[];
@@ -84,6 +87,72 @@ export interface PipelineRun {
   extraction_result?: ExtractionResult | null;
   validation_result?: ValidationResult | null;
   router_decision?: RouterDecision | null;
+}
+
+export interface CrossFieldMatch {
+  field_name: string;
+  values_by_doc: Record<string, string | null>;
+  status: CrossFieldStatus;
+  reason: string;
+}
+
+export interface CrossValidationResult {
+  shipment_id: string;
+  checked_fields: CrossFieldMatch[];
+  overall_consistent: boolean;
+  checked_at: string;
+}
+
+export interface Shipment {
+  shipment_id: string;
+  email_id: string;
+  customer_id: string;
+  triggered_by?: string | null;
+  recipient?: string | null;
+  subject?: string | null;
+  original_message_id?: string | null;
+  references?: string[];
+  reply_message_id?: string | null;
+  reply_mail_path?: string | null;
+  triggered_at: string;
+  status: ShipmentStatus;
+  document_runs: PipelineRun[];
+  cross_validation_result?: CrossValidationResult | null;
+  overall_decision?: RouterDecision | null;
+  draft_reply?: string | null;
+  completed_at?: string | null;
+}
+
+export interface SimulatedMailRequest {
+  email_id?: string | null;
+  sender: string;
+  recipient: string;
+  subject: string;
+  customer_id: string;
+  attachments: Array<{
+    filename: string;
+    path: string;
+    detected_doc_type?: DocumentType | null;
+  }>;
+  body?: string;
+}
+
+export interface LocalMailDelivery {
+  email_id: string;
+  message_id: string;
+  mailbox_path: string;
+  status: "QUEUED";
+  message: string;
+}
+
+export interface ShipmentEvent {
+  event_type: string;
+  shipment_id: string | null;
+  email_id: string | null;
+  customer_id: string | null;
+  status: ShipmentStatus | string | null;
+  payload: Record<string, unknown>;
+  emitted_at: string;
 }
 
 export interface QueryEvidenceItem {
