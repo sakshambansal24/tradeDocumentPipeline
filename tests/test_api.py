@@ -50,7 +50,7 @@ class StaticPlanner:
     def __init__(self, plan: SqlQueryPlan) -> None:
         self._plan = plan
 
-    def plan(self, question: str) -> SqlQueryPlan:
+    def plan(self, question: str, *, schema_context: str = "") -> SqlQueryPlan:
         return self._plan
 
 

@@ -7,14 +7,21 @@ from openai import OpenAI, OpenAIError
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import text
 from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.types import JSON
 
+from nova.schemas.decision import DecisionType
+from nova.schemas.extraction import DocumentType
+from nova.schemas.pipeline import PipelineRunStatus, StageName, StageStatus
 from nova.schemas.query import (
     QueryAnswer,
     QueryEvidence,
     SqlQueryPlan,
 )
+from nova.schemas.shipment import CrossFieldStatus, ShipmentStatus
+from nova.schemas.validation import FieldValidationStatus, ValidationOverallStatus
 from nova.settings import get_settings
 from nova.storage import session_scope
+from nova.storage.models import Base
 
 ALLOWED_TABLES = {
     "customers",
@@ -22,115 +29,76 @@ ALLOWED_TABLES = {
     "documents",
     "extractions",
     "pipeline_runs",
+    "shipments",
     "validations",
 }
 ALLOWED_TABLE_FUNCTIONS = {"json_each"}
+ALLOWED_TABLE_ORDER = (
+    "shipments",
+    "pipeline_runs",
+    "documents",
+    "extractions",
+    "validations",
+    "decisions",
+    "customers",
+)
+CATEGORICAL_COLUMNS = {
+    "content_type",
+    "customer_id",
+    "decision",
+    "overall_status",
+    "rule_set_version",
+    "source_filename",
+    "status",
+}
+JSON_DOMAIN_LEAF_KEYS = {
+    "decision",
+    "document_type",
+    "field_name",
+    "overall_consistent",
+    "status",
+}
 MAX_ROWS = 100
 UNSUPPORTED_DOMAIN_VALUES = {
-    "APPROVED": "Use AUTO_APPROVE for auto-approved decisions.",
     "AUTO": "Use AUTO_APPROVE for decisions or PASSED for validation status.",
-    "REJECTED": "There is no REJECTED decision; use AMEND, HUMAN_REVIEW, or failing validation statuses.",
+    "REJECTED": (
+        "There is no REJECTED decision; use AMEND, HUMAN_REVIEW, "
+        "or failing validation statuses."
+    ),
     "REVIEW": "Use HUMAN_REVIEW for routing decisions or NEEDS_REVIEW for validation/run status.",
 }
 
 SQL_SYSTEM_PROMPT = """You convert user questions into one read-only SQLite SELECT query.
 Return only structured output matching the requested schema.
 
-Database schema:
-- Generate exactly one SELECT statement.
-- Use only these tables and columns:
-  documents(id, filename, content_type, uploaded_at, source_hash, page_count)
-  extractions(id, document_id, model_used, latency_ms, cost_usd, raw_response_id, created_at, payload)
-  validations(id, extraction_id, customer_id, rule_set_version, overall_status, validator_confidence, created_at, field_results)
-  decisions(id, validation_id, decision, reasoning, drafted_message, risk_flags, created_at)
-  pipeline_runs(id, run_id, document_id, customer_id, status, decision, decision_details, started_at, completed_at, cost_total_usd, stage_history, trace_id)
-  customers(id, name, rule_set_path, created_at)
-
-JSON keys stored in the database:
-- extractions.payload:
-  document_id, document_type, fields, model_used, latency_ms, cost_usd, raw_response_id
-- extractions.payload.fields is an object keyed by field name. Valid field names are:
-  consignee_name, hs_code, port_of_loading, port_of_discharge, incoterms,
-  description_of_goods, gross_weight, invoice_number
-- Each extractions.payload.fields.<field_name> object has keys:
-  name, value, confidence, source_page, source_snippet, reasoning, is_present
-- validations.field_results is a JSON array. Use json_each(validations.field_results)
-  and json_extract(field.value, '$.key') to inspect it.
-- Each validations.field_results item has keys:
-  field_name, status, found_value, expected_value, expected_rule, reason, extraction_confidence
-- pipeline_runs.decision_details has keys:
-  decision, reasoning, drafted_message, risk_flags
-- pipeline_runs.stage_history is a JSON array. Each item has keys:
-  stage, status, started_at, completed_at, latency_ms, cost_usd, trace_id,
-  message, error_message
-- decisions.risk_flags is a JSON array of strings.
-
-Exact enum/domain values:
-- pipeline_runs.decision and decisions.decision can only be:
-  AUTO_APPROVE, HUMAN_REVIEW, AMEND
-- validations.overall_status can only be:
-  PASSED, FAILED, NEEDS_REVIEW
-- validations.field_results[*].status can only be:
-  MATCH, MISMATCH, UNCERTAIN, MISSING
-- pipeline_runs.status can only be:
-  PENDING, RUNNING, COMPLETED, FAILED, NEEDS_REVIEW
-- stage_history[*].stage can only be:
-  INGESTION, EXTRACTION, VALIDATION, ROUTING, STORAGE, QUERY
-- stage_history[*].status can only be:
-  PENDING, RUNNING, COMPLETED, FAILED, SKIPPED
-- extractions.payload.document_type can only be:
-  BOL, INVOICE, PACKING_LIST, COO, UNKNOWN
-- customers currently include:
-  acme_corp
-
-Customer rule values for acme_corp:
-- rule_set_version: 2026-05-30
-- configured field names:
-  consignee_name, incoterms, hs_code, gross_weight, invoice_number,
-  port_of_loading, port_of_discharge, description_of_goods
-- critical fields:
-  consignee_name, gross_weight, hs_code, invoice_number
-- consignee_name exact expected value:
-  ACME Corporation Pvt Ltd
-- incoterms allowed values:
-  FOB, CIF, DAP
-- hs_code rule:
-  regex "^\\d{6,10}$"
-- gross_weight rule:
-  min_kg 100, max_kg 25000
-- invoice_number, port_of_loading, port_of_discharge, description_of_goods:
-  presence required
-- cross-field rule india_loading_requires_8_digit_hs_code:
-  if port_of_loading is one of IN, India, Nhava Sheva, Mundra, Chennai,
-  then hs_code must match "^\\d{8}$" and length 8.
-
-User wording to stored values:
-- "auto approved", "approved automatically", "straight through", "passed without action"
-  means decision = 'AUTO_APPROVE'. Never use 'APPROVED' as a decision.
-- "amendment", "needs amendment", "supplier amendment", "flagged for amendment"
-  means decision = 'AMEND'.
-- "human review", "manual review", "operator review" means decision = 'HUMAN_REVIEW'.
-- "validation passed" means validations.overall_status = 'PASSED'.
-- "validation failed" means validations.overall_status = 'FAILED'.
-- "needs review" as validation status means validations.overall_status = 'NEEDS_REVIEW'.
-- "matched field" means validations.field_results status 'MATCH'.
-- "mismatched field" or "failing field" means validations.field_results status
-  IN ('MISMATCH', 'MISSING') unless the user specifically asks for UNCERTAIN.
-- "uncertain field" means validations.field_results status 'UNCERTAIN'.
-- "rejected" is not a stored decision value. For rejection/failure reason questions,
-  inspect validations.field_results with status IN ('MISMATCH', 'MISSING').
-
 Query planning rules:
-- Never use INSERT, UPDATE, DELETE, DROP, ALTER, CREATE, PRAGMA, ATTACH, DETACH, or multiple statements.
+- Generate exactly one SELECT statement.
+- Use only the tables, columns, JSON paths, and values supplied in the runtime
+  schema context.
+- Never use INSERT, UPDATE, DELETE, DROP, ALTER, CREATE, PRAGMA, ATTACH,
+  DETACH, multiple statements, or SQL comments.
 - Prefer explicit column names instead of SELECT *.
 - Add LIMIT 100 for non-aggregate result sets.
-- For document/run counts, decisions, dates, customers, and costs, prefer pipeline_runs.
-- Use the normalized joins only when fields from documents, extractions, validations,
-  or decisions are actually needed.
+- Use json_each(...) and json_extract(...) for JSON arrays/objects when needed.
+- For shipment-level questions, prefer shipments.
+- For "last shipment" or "latest shipment", query shipments ordered by
+  COALESCE(completed_at, triggered_at) DESC, unless the user explicitly asks for a
+  document/pipeline run.
+- For "why did/explain why the last/latest shipment needed review/amendment",
+  first retrieve the last/latest shipment without filtering by review/amendment
+  status, then inspect shipments.status, shipments.overall_decision,
+  shipments.cross_validation_result, and draft_reply.
+- Only filter shipments by status or overall_decision when the wording asks for
+  "the last shipment that/which was ..." or "shipments with ..." a specific outcome.
+- Use pipeline_runs for document/run-level questions such as stage history, trace,
+  per-document extraction, validation, document decision, and document cost.
+- Join shipments to pipeline_runs on pipeline_runs.shipment_id = shipments.shipment_id
+  only when a shipment question also needs document-run details, filenames, stage
+  history, extraction, validation, or per-document cost.
 - For "this week", use the current UTC date context supplied by the user.
-- For date filters on run/document questions, prefer pipeline_runs.completed_at.
-- For amendment/flagged amendment questions, filter pipeline_runs.decision = 'AMEND'.
-- For rejected/failing field reason questions, inspect validations.field_results JSON when needed."""
+- For "auto approved" decisions, use AUTO_APPROVE, not APPROVED.
+- For "rejected" or failure reason questions, inspect validation field results;
+  there is no REJECTED decision value."""
 
 SUMMARY_SYSTEM_PROMPT = """You summarize grounded SQL query results for Nova document pipeline data.
 Use only the provided question, SQL, and rows. Do not invent missing facts.
@@ -150,7 +118,7 @@ Do not expose raw enum names unless the user explicitly asks for stored values."
 
 
 class QueryPlanner(Protocol):
-    def plan(self, question: str) -> SqlQueryPlan:
+    def plan(self, question: str, *, schema_context: str = "") -> SqlQueryPlan:
         ...
 
 
@@ -165,11 +133,12 @@ class OpenAIQueryPlanner:
         self.model = model or settings.non_vision_model
         self._client = OpenAI(api_key=api_key or settings.openai_api_key)
 
-    def plan(self, question: str) -> SqlQueryPlan:
+    def plan(self, question: str, *, schema_context: str = "") -> SqlQueryPlan:
         now = datetime.now(UTC)
         dated_question = (
             f"Current UTC datetime: {now.isoformat()}\n"
             f"Current UTC date: {now.date().isoformat()}\n\n"
+            f"Runtime schema context:\n{schema_context}\n\n"
             f"Question: {question}"
         )
         try:
@@ -242,14 +211,278 @@ class QueryAgent:
         self.summarizer = summarizer or OpenAIQuerySummarizer()
 
     def ask(self, question: str) -> QueryAnswer:
-        plan = self.planner.plan(question)
-        sql = validate_sql(plan.sql)
         with session_scope(self.session_factory) as session:
+            override_sql = deterministic_query_for(question)
+            if override_sql is None:
+                schema_context = build_schema_context(session)
+                plan = self.planner.plan(question, schema_context=schema_context)
+                sql = validate_sql(plan.sql)
+            else:
+                sql = validate_sql(override_sql)
             rows = execute_sql(session, sql)
 
         evidence = QueryEvidence(sql=sql, rows=rows, row_count=len(rows))
         answer = self.summarizer.summarize(question=question, sql=sql, rows=rows)
         return QueryAnswer(answer=answer, evidence=evidence)
+
+
+def deterministic_query_for(question: str) -> str | None:
+    if is_latest_shipment_explanation_question(question):
+        return (
+            "SELECT shipment_id, email_id, customer_id, subject, status, "
+            "overall_decision, cross_validation_result, draft_reply, triggered_at, completed_at "
+            "FROM shipments "
+            "ORDER BY COALESCE(completed_at, triggered_at) DESC "
+            "LIMIT 1"
+        )
+    return None
+
+
+def is_latest_shipment_explanation_question(question: str) -> bool:
+    normalized = re.sub(r"\s+", " ", question.casefold()).strip()
+    if "shipment" not in normalized:
+        return False
+    if not re.search(r"\b(last|latest)\b", normalized):
+        return False
+    if not re.search(r"\b(why|explain|reason)\b", normalized):
+        return False
+    if not re.search(r"\b(review|amend|amendment|action)\b", normalized):
+        return False
+    return re.search(r"\b(last|latest) shipment (that|which)\b", normalized) is None
+
+
+def build_schema_context(session: Session) -> str:
+    lines = ["Database tables and columns:"]
+    lines.extend(table_schema_lines())
+
+    relationship_lines = foreign_key_lines()
+    if relationship_lines:
+        lines.append("")
+        lines.append("Foreign keys:")
+        lines.extend(relationship_lines)
+
+    json_lines = observed_json_schema_lines(session)
+    if json_lines:
+        lines.append("")
+        lines.append("Observed JSON paths:")
+        lines.extend(json_lines)
+
+    known_domain_lines = known_domain_value_lines()
+    if known_domain_lines:
+        lines.append("")
+        lines.append("Known domain values:")
+        lines.extend(known_domain_lines)
+
+    domain_lines = observed_domain_value_lines(session)
+    if domain_lines:
+        lines.append("")
+        lines.append("Observed domain values:")
+        lines.extend(domain_lines)
+
+    return "\n".join(lines)
+
+
+def table_schema_lines() -> list[str]:
+    lines = []
+    for table_name in ALLOWED_TABLE_ORDER:
+        table = Base.metadata.tables.get(table_name)
+        if table is None:
+            continue
+        column_names = ", ".join(column.name for column in table.columns)
+        lines.append(f"- {table_name}({column_names})")
+    return lines
+
+
+def foreign_key_lines() -> list[str]:
+    lines = []
+    for table_name in ALLOWED_TABLE_ORDER:
+        table = Base.metadata.tables.get(table_name)
+        if table is None:
+            continue
+        for column in table.columns:
+            for foreign_key in column.foreign_keys:
+                target = foreign_key.column
+                lines.append(
+                    f"- {table_name}.{column.name} -> {target.table.name}.{target.name}"
+                )
+    return lines
+
+
+def observed_json_schema_lines(session: Session) -> list[str]:
+    lines = []
+    for table_name, column_name in json_columns():
+        samples = json_samples(session, table_name=table_name, column_name=column_name)
+        paths = sorted({path for sample in samples for path in collect_json_paths(sample)})
+        if paths:
+            lines.append(f"- {table_name}.{column_name}: {', '.join(paths[:50])}")
+    return lines
+
+
+def observed_domain_value_lines(session: Session) -> list[str]:
+    lines = []
+    for table_name in ALLOWED_TABLE_ORDER:
+        table = Base.metadata.tables.get(table_name)
+        if table is None:
+            continue
+        for column in table.columns:
+            if column.name not in CATEGORICAL_COLUMNS:
+                continue
+            values = distinct_column_values(session, table_name=table_name, column_name=column.name)
+            if values:
+                lines.append(f"- {table_name}.{column.name}: {', '.join(values)}")
+
+    json_values = observed_json_domain_values(session)
+    for location, values in sorted(json_values.items()):
+        if values:
+            lines.append(f"- {location}: {', '.join(sorted(values)[:20])}")
+    return lines
+
+
+def known_domain_value_lines() -> list[str]:
+    return [
+        enum_values_line("pipeline_runs.status", PipelineRunStatus),
+        enum_values_line("pipeline_runs.decision", DecisionType),
+        enum_values_line("decisions.decision", DecisionType),
+        enum_values_line("shipments.status", ShipmentStatus),
+        enum_values_line("shipments.overall_decision.decision", DecisionType),
+        enum_values_line("validations.overall_status", ValidationOverallStatus),
+        enum_values_line("validations.field_results[].status", FieldValidationStatus),
+        enum_values_line("extractions.payload.document_type", DocumentType),
+        enum_values_line("pipeline_runs.stage_history[].stage", StageName),
+        enum_values_line("pipeline_runs.stage_history[].status", StageStatus),
+        enum_values_line(
+            "shipments.cross_validation_result.checked_fields[].status",
+            CrossFieldStatus,
+        ),
+    ]
+
+
+def enum_values_line(location: str, enum_type) -> str:
+    return f"- {location}: {', '.join(item.value for item in enum_type)}"
+
+
+def json_columns() -> list[tuple[str, str]]:
+    columns = []
+    for table_name in ALLOWED_TABLE_ORDER:
+        table = Base.metadata.tables.get(table_name)
+        if table is None:
+            continue
+        for column in table.columns:
+            if isinstance(column.type, JSON):
+                columns.append((table_name, column.name))
+    return columns
+
+
+def json_samples(
+    session: Session,
+    *,
+    table_name: str,
+    column_name: str,
+    limit: int = 20,
+) -> list[Any]:
+    rows = session.execute(
+        text(
+            f"SELECT {column_name} AS value "
+            f"FROM {table_name} "
+            f"WHERE {column_name} IS NOT NULL "
+            f"LIMIT :limit"
+        ),
+        {"limit": limit},
+    ).mappings()
+    samples = []
+    for row in rows:
+        samples.append(parse_json_value(row["value"]))
+    return samples
+
+
+def parse_json_value(value: Any) -> Any:
+    if isinstance(value, str):
+        try:
+            return json.loads(value)
+        except json.JSONDecodeError:
+            return value
+    return value
+
+
+def collect_json_paths(value: Any, *, prefix: str = "$", depth: int = 0) -> set[str]:
+    if depth > 4:
+        return set()
+    if isinstance(value, dict):
+        paths = set()
+        for key, child in value.items():
+            child_prefix = f"{prefix}.{key}"
+            paths.add(child_prefix)
+            paths.update(collect_json_paths(child, prefix=child_prefix, depth=depth + 1))
+        return paths
+    if isinstance(value, list):
+        paths = {f"{prefix}[]"}
+        for item in value[:5]:
+            paths.update(collect_json_paths(item, prefix=f"{prefix}[]", depth=depth + 1))
+        return paths
+    return set()
+
+
+def distinct_column_values(
+    session: Session,
+    *,
+    table_name: str,
+    column_name: str,
+    limit: int = 20,
+) -> list[str]:
+    rows = session.execute(
+        text(
+            f"SELECT DISTINCT {column_name} AS value "
+            f"FROM {table_name} "
+            f"WHERE {column_name} IS NOT NULL "
+            f"ORDER BY {column_name} "
+            f"LIMIT :limit"
+        ),
+        {"limit": limit},
+    ).mappings()
+    return [str(row["value"]) for row in rows if row["value"] is not None]
+
+
+def observed_json_domain_values(session: Session) -> dict[str, set[str]]:
+    values_by_path: dict[str, set[str]] = {}
+    for table_name, column_name in json_columns():
+        for sample in json_samples(session, table_name=table_name, column_name=column_name):
+            collect_json_leaf_values(
+                sample,
+                location=f"{table_name}.{column_name}",
+                values_by_path=values_by_path,
+            )
+    return values_by_path
+
+
+def collect_json_leaf_values(
+    value: Any,
+    *,
+    location: str,
+    values_by_path: dict[str, set[str]],
+    depth: int = 0,
+) -> None:
+    if depth > 4:
+        return
+    if isinstance(value, dict):
+        for key, child in value.items():
+            child_location = f"{location}.{key}"
+            if key in JSON_DOMAIN_LEAF_KEYS and not isinstance(child, dict | list):
+                values_by_path.setdefault(child_location, set()).add(str(child))
+            collect_json_leaf_values(
+                child,
+                location=child_location,
+                values_by_path=values_by_path,
+                depth=depth + 1,
+            )
+        return
+    if isinstance(value, list):
+        for item in value[:20]:
+            collect_json_leaf_values(
+                item,
+                location=f"{location}[]",
+                values_by_path=values_by_path,
+                depth=depth + 1,
+            )
 
 
 def validate_sql(sql: str) -> str:
@@ -298,6 +531,12 @@ def validate_sql(sql: str) -> str:
 
 
 def reject_unsupported_domain_values(sql: str) -> None:
+    if uses_approved_as_decision(sql):
+        raise QueryAgentError(
+            "Generated SQL used unsupported domain value APPROVED. "
+            "Use AUTO_APPROVE for auto-approved decisions."
+        )
+
     quoted_literals = {
         match.group(1).strip().casefold()
         for match in re.finditer(r"'([^']*)'", sql)
@@ -307,6 +546,14 @@ def reject_unsupported_domain_values(sql: str) -> None:
             raise QueryAgentError(
                 f"Generated SQL used unsupported domain value {value}. {message}"
             )
+
+
+def uses_approved_as_decision(sql: str) -> bool:
+    return re.search(
+        r"(?:\bdecision\b|[\w.]+\.decision)\s*(?:=|in\s*\()\s*'APPROVED'",
+        sql,
+        flags=re.IGNORECASE,
+    ) is not None
 
 
 def extract_referenced_relations(sql: str) -> set[str]:
