@@ -4,30 +4,54 @@ from uuid import uuid4
 import pytest
 
 from nova.query import QueryAgent, QueryAgentError
-from nova.query.query_agent import SQL_SYSTEM_PROMPT, SUMMARY_SYSTEM_PROMPT, validate_sql
+from nova.query.query_agent import (
+    SQL_SYSTEM_PROMPT,
+    SUMMARY_SYSTEM_PROMPT,
+    build_schema_context,
+    validate_sql,
+)
 from nova.schemas.decision import DecisionType, RouterDecision
 from nova.schemas.extraction import DocumentType, ExtractedField, ExtractionResult
 from nova.schemas.ingestion import LoadedDocument, PageImage
 from nova.schemas.pipeline import PipelineRun, PipelineRunStatus, StageEvent, StageName, StageStatus
 from nova.schemas.query import SqlQueryPlan
+from nova.schemas.shipment import Shipment, ShipmentStatus
 from nova.schemas.validation import (
     FieldValidation,
     FieldValidationStatus,
     ValidationOverallStatus,
     ValidationResult,
 )
-from nova.storage import PipelineRunRepository, init_db, session_scope
+from nova.storage import PipelineRunRepository, ShipmentRepository, init_db, session_scope
 
 
-def test_sql_prompt_exposes_db_keys_and_rule_values() -> None:
-    assert "pipeline_runs(id, run_id, document_id" in SQL_SYSTEM_PROMPT
-    assert "validations.field_results item has keys" in SQL_SYSTEM_PROMPT
-    assert "field_name, status, found_value, expected_value" in SQL_SYSTEM_PROMPT
-    assert "AUTO_APPROVE, HUMAN_REVIEW, AMEND" in SQL_SYSTEM_PROMPT
-    assert "MATCH, MISMATCH, UNCERTAIN, MISSING" in SQL_SYSTEM_PROMPT
-    assert "consignee_name, hs_code, port_of_loading" in SQL_SYSTEM_PROMPT
-    assert "FOB, CIF, DAP" in SQL_SYSTEM_PROMPT
-    assert "ACME Corporation Pvt Ltd" in SQL_SYSTEM_PROMPT
+def test_sql_prompt_uses_runtime_schema_context() -> None:
+    assert "Runtime schema context" not in SQL_SYSTEM_PROMPT
+    assert "Use only the tables, columns, JSON paths, and values" in SQL_SYSTEM_PROMPT
+    assert "For shipment-level questions, prefer shipments." in SQL_SYSTEM_PROMPT
+    assert "For \"last shipment\" or \"latest shipment\"" in SQL_SYSTEM_PROMPT
+    assert "without filtering by review/amendment" in SQL_SYSTEM_PROMPT
+
+
+def test_runtime_schema_context_exposes_tables_and_observed_values(tmp_path) -> None:
+    session_factory = init_db(f"sqlite:///{tmp_path / 'query-schema.db'}")
+    now = datetime.now(UTC)
+    with session_scope(session_factory) as session:
+        repo = PipelineRunRepository(session)
+        run = _run(customer_id="acme_corp", completed_at=now)
+        repo.save_run(run, state=_state(run, decision=DecisionType.AMEND))
+
+        context = build_schema_context(session)
+
+    assert "shipments(shipment_id, email_id, customer_id" in context
+    assert "pipeline_runs(id, run_id, document_id" in context
+    assert "pipeline_runs.shipment_id -> shipments.shipment_id" in context
+    assert "$.document_id" in context
+    assert "validations.field_results: $[]" in context
+    assert "shipments.status: PENDING, PROCESSING, REQUIRES_REVIEW, APPROVED, AMENDED" in context
+    assert "pipeline_runs.decision: AUTO_APPROVE, HUMAN_REVIEW, AMEND" in context
+    assert "decisions.decision: AMEND" in context
+    assert "validations.field_results[].status: MATCH" in context
 
 
 def test_summary_prompt_translates_enum_values_to_user_language() -> None:
@@ -39,6 +63,65 @@ def test_summary_prompt_translates_enum_values_to_user_language() -> None:
 def test_query_rejects_common_hallucinated_domain_values() -> None:
     with pytest.raises(QueryAgentError, match="unsupported domain value APPROVED"):
         validate_sql("SELECT COUNT(*) FROM pipeline_runs WHERE decision = 'APPROVED'")
+
+
+def test_query_allows_shipment_table_for_shipment_level_questions() -> None:
+    sql = validate_sql(
+        "SELECT shipment_id, customer_id, status, overall_decision, triggered_at, completed_at "
+        "FROM shipments "
+        "WHERE customer_id = 'acme_corp' "
+        "ORDER BY COALESCE(completed_at, triggered_at) DESC "
+        "LIMIT 1"
+    )
+
+    assert "FROM shipments" in sql
+    assert sql.endswith("LIMIT 1")
+
+
+def test_latest_shipment_explanation_does_not_filter_out_amended_shipments(tmp_path) -> None:
+    session_factory = init_db(f"sqlite:///{tmp_path / 'query-last-shipment.db'}")
+    now = datetime.now(UTC)
+    shipment_id = uuid4()
+    with session_scope(session_factory) as session:
+        ShipmentRepository(session).save_shipment(
+            Shipment(
+                shipment_id=shipment_id,
+                email_id="email-latest-shipment",
+                customer_id="acme_corp",
+                triggered_at=now,
+                status=ShipmentStatus.AMENDED,
+                document_runs=[],
+                overall_decision=RouterDecision(
+                    decision=DecisionType.AMEND,
+                    reasoning="Cross-document inconsistencies require supplier amendment.",
+                    drafted_message="Please amend.",
+                    risk_flags=["cross_document_inconsistency"],
+                ),
+                draft_reply="Please amend the inconsistent documents.",
+                completed_at=now,
+            )
+        )
+
+    agent = QueryAgent(
+        session_factory=session_factory,
+        planner=StaticPlanner(
+            SqlQueryPlan(
+                sql=(
+                    "SELECT shipment_id FROM shipments "
+                    "WHERE status = 'REQUIRES_REVIEW' "
+                    "ORDER BY COALESCE(completed_at, triggered_at) DESC "
+                    "LIMIT 1"
+                )
+            )
+        ),
+        summarizer=StaticSummarizer("The latest shipment required amendment."),
+    )
+
+    answer = agent.ask("explain why last shipment needed review")
+
+    assert "WHERE status = 'REQUIRES_REVIEW'" not in answer.evidence.sql
+    assert answer.evidence.rows[0]["shipment_id"] == str(shipment_id)
+    assert answer.evidence.rows[0]["status"] == ShipmentStatus.AMENDED.value
 
 
 def test_query_counts_amendments_this_week_with_evidence(tmp_path) -> None:
@@ -179,7 +262,7 @@ class StaticPlanner:
     def __init__(self, plan: SqlQueryPlan) -> None:
         self._plan = plan
 
-    def plan(self, question: str) -> SqlQueryPlan:
+    def plan(self, question: str, *, schema_context: str = "") -> SqlQueryPlan:
         return self._plan
 
 
