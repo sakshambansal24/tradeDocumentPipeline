@@ -29,7 +29,7 @@ Field definitions:
 - gross_weight: Gross cargo weight including unit, often labeled Gross Weight, G.W.,
   GW, or Total Gross Weight.
 - invoice_number: Commercial invoice identifier, often labeled Invoice No, Inv No,
-  Invoice Number, or Tax Invoice No.
+  Invoice Number, or Tax Invoice No, or other similar label.
 
 CRITICAL RULES:
 1. Never infer from world knowledge - only extract what you see in the images.
