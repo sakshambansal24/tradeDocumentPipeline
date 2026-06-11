@@ -20,6 +20,7 @@ export function InboxSimulator({ customers }: { customers: CustomerSummary[] }) 
   const [sender, setSender] = useState("supplier@example.com");
   const [recipient, setRecipient] = useState("cg@gocomet.local");
   const [subject, setSubject] = useState("Shipment docs - ACME shipment for review");
+  const [inReplyTo, setInReplyTo] = useState("");
   const [body, setBody] = useState(
     "Dear CG Team,\n\nPlease find attached the shipment documents for review.\n\nRegards,\nSupplier"
   );
@@ -40,6 +41,7 @@ export function InboxSimulator({ customers }: { customers: CustomerSummary[] }) 
         sender,
         recipient,
         subject,
+        inReplyTo,
         customerId,
         attachments: attachments.map((attachment) => ({
           filename: attachment.filename,
@@ -96,6 +98,20 @@ export function InboxSimulator({ customers }: { customers: CustomerSummary[] }) 
             placeholder="Shipment docs - ACME shipment for review"
             value={subject}
           />
+        </label>
+        <label className="text-sm">
+          <span className="mb-1 block font-medium text-neutral-700">
+            Reply to Message-ID (optional)
+          </span>
+          <input
+            className="w-full rounded-md border border-neutral-300 bg-white px-3 py-2"
+            onChange={(event) => setInReplyTo(event.target.value)}
+            placeholder="<original-message-id@nova.local>"
+            value={inReplyTo}
+          />
+          <span className="mt-1 block text-xs text-neutral-500">
+            Fill this only when this email should update an existing shipment thread.
+          </span>
         </label>
         <label className="text-sm">
           <span className="mb-1 block font-medium text-neutral-700">Customer</span>

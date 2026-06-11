@@ -129,6 +129,7 @@ export interface SimulatedMailRequest {
   recipient: string;
   subject: string;
   customer_id: string;
+  in_reply_to?: string | null;
   attachments: Array<{
     filename: string;
     path: string;

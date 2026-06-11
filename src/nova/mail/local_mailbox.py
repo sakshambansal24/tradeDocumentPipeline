@@ -43,13 +43,17 @@ class SimulatedMailRequest(BaseModel):
     attachments: list[SimulatedMailAttachment]
     body: str = "Please find attached the shipment documents for review."
     email_id: str | None = None
+    in_reply_to: str | None = None
 
-    @field_validator("sender", "recipient", "subject", "customer_id", "body")
+    @field_validator("sender", "recipient", "subject", "customer_id", "body", "in_reply_to")
     @classmethod
-    def require_non_empty_text(cls, value: str) -> str:
-        if not value.strip():
+    def require_non_empty_text(cls, value: str | None) -> str | None:
+        if value is None:
+            return value
+        stripped = value.strip()
+        if not stripped:
             raise ValueError("must be non-empty")
-        return value
+        return stripped
 
     @field_validator("attachments")
     @classmethod
@@ -94,6 +98,7 @@ class LocalMailSimulator:
             subject=request.subject,
             customer_id=request.customer_id,
             body=request.body,
+            in_reply_to=request.in_reply_to,
             attachments=attachments,
         )
 
@@ -107,6 +112,7 @@ class LocalMailSimulator:
         customer_id: str,
         body: str,
         attachments: Sequence[LocalMailAttachment],
+        in_reply_to: str | None = None,
     ) -> LocalMailDelivery:
         self.incoming_dir.mkdir(parents=True, exist_ok=True)
         email_id = email_id or f"mail-{datetime.now(UTC).timestamp():.6f}".replace(".", "-")
@@ -117,6 +123,9 @@ class LocalMailSimulator:
         message["To"] = recipient
         message["Subject"] = subject
         message["Message-ID"] = message_id
+        if in_reply_to:
+            message["In-Reply-To"] = in_reply_to
+            message["References"] = in_reply_to
         message["X-Nova-Email-ID"] = email_id
         message["X-Nova-Customer-ID"] = customer_id
         message.set_content(body)
@@ -379,6 +388,11 @@ def parse_mail_to_incoming_email(mail_path: Path, *, attachments_dir: Path) -> I
         destination.write_bytes(attachment.get_payload(decode=True) or b"")
         attachments.append(EmailAttachment(filename=filename, path=destination))
 
+    references = parse_references(message.get("References"))
+    in_reply_to = message.get("In-Reply-To")
+    if in_reply_to and in_reply_to not in references:
+        references.append(in_reply_to)
+
     return IncomingEmail(
         email_id=email_id,
         sender=message.get("From", ""),
@@ -387,7 +401,7 @@ def parse_mail_to_incoming_email(mail_path: Path, *, attachments_dir: Path) -> I
         customer_id=customer_id,
         attachments=attachments,
         message_id=message.get("Message-ID"),
-        references=parse_references(message.get("References")),
+        references=references,
     )
 
 

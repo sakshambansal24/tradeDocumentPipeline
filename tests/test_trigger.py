@@ -19,9 +19,11 @@ from nova.trigger import ShipmentEventBus
 class RecordingShipmentPipeline:
     def __init__(self) -> None:
         self.processed_email_ids: list[str] = []
+        self.processed_references: list[list[str]] = []
 
     def process(self, email) -> None:
         self.processed_email_ids.append(email.email_id)
+        self.processed_references.append(email.references)
 
 
 def test_post_mail_simulate_drops_email_for_mail_watcher(tmp_path) -> None:
@@ -80,6 +82,7 @@ def test_post_mail_simulate_upload_drops_uploaded_email_for_watcher(tmp_path) ->
                 "subject": "Uploaded shipment docs",
                 "customer_id": "acme_corp",
                 "body": "Please review uploaded documents.",
+                "in_reply_to": "<original-message@nova.local>",
                 "filenames": ["uploaded_invoice.png"],
             },
             files={
@@ -98,6 +101,7 @@ def test_post_mail_simulate_upload_drops_uploaded_email_for_watcher(tmp_path) ->
     assert response.status_code == 200
     assert response.json()["email_id"] == "email-upload-001"
     assert pipeline.processed_email_ids == ["email-upload-001"]
+    assert pipeline.processed_references == [["<original-message@nova.local>"]]
     assert (attachments_dir / "email-upload-001" / "uploaded_invoice.png").exists()
 
 

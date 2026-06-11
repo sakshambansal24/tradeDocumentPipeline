@@ -102,6 +102,60 @@ def test_cross_validation_failure_overrides_doc_approval_to_amend(tmp_path) -> N
     assert "INVOICE shows ACME Corp Ltd." in shipment.draft_reply
 
 
+def test_thread_reply_appends_new_document_and_revalidates_shipment(tmp_path) -> None:
+    session_factory = init_db(f"sqlite:///{tmp_path / 'thread-update.db'}")
+    pipeline = ShipmentPipeline(
+        runner=SequentialRunner(
+            [
+                _run(DocumentType.BOL, consignee_name="ACME Corporation Pvt Ltd"),
+                _run(DocumentType.INVOICE, consignee_name="ACME Corporation Pvt Ltd"),
+            ]
+        ),
+        storage_session_factory=session_factory,
+        document_loader=NoopDocumentLoader(),
+        shipment_router=ShipmentRouter(draft_writer=FailingDraftWriter()),
+    )
+
+    first_shipment = pipeline.process(
+        IncomingEmail(
+            email_id="email-thread-001",
+            sender="supplier@example.com",
+            subject="Shipment docs - ACME Corp",
+            customer_id="acme_corp",
+            attachments=[
+                {"filename": "bol.pdf", "path": str(tmp_path / "bol.pdf")},
+            ],
+            message_id="<email-thread-001@nova.local>",
+        )
+    )
+    updated_shipment = pipeline.process(
+        IncomingEmail(
+            email_id="email-thread-002",
+            sender="supplier@example.com",
+            subject="Re: Shipment docs - ACME Corp",
+            customer_id="acme_corp",
+            attachments=[
+                {"filename": "invoice.pdf", "path": str(tmp_path / "invoice.pdf")},
+            ],
+            message_id="<email-thread-002@nova.local>",
+            references=["<email-thread-001@nova.local>"],
+        )
+    )
+
+    assert updated_shipment.shipment_id == first_shipment.shipment_id
+    assert updated_shipment.email_id == "email-thread-002"
+    assert len(updated_shipment.document_runs) == 2
+    assert updated_shipment.original_message_id == "<email-thread-001@nova.local>"
+    assert "<email-thread-001@nova.local>" in updated_shipment.references
+    assert "<email-thread-002@nova.local>" in updated_shipment.references
+    assert updated_shipment.cross_validation_result is not None
+    fields_by_name = {
+        field.field_name: field
+        for field in updated_shipment.cross_validation_result.checked_fields
+    }
+    assert fields_by_name["consignee_name"].status == CrossFieldStatus.CONSISTENT
+
+
 class SequentialRunner:
     def __init__(self, runs: list[PipelineRun]) -> None:
         self.runs = runs
