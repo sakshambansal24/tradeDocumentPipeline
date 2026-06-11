@@ -87,10 +87,12 @@ export async function simulateUploadedMail(input: {
   subject: string;
   customerId: string;
   body: string;
+  inReplyTo?: string;
   attachments: Array<{ filename: string; file: File }>;
 }): Promise<LocalMailDelivery> {
   const formData = new FormData();
   if (input.emailId) formData.append("email_id", input.emailId);
+  if (input.inReplyTo?.trim()) formData.append("in_reply_to", input.inReplyTo.trim());
   formData.append("sender", input.sender);
   formData.append("recipient", input.recipient);
   formData.append("subject", input.subject);

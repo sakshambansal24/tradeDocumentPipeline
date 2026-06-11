@@ -80,16 +80,20 @@ class PipelineRunRepository:
             extraction_id = self._save_extraction(state)
             validation_id = self._save_validation(state, extraction_id=extraction_id)
             self._save_decision(state, validation_id=validation_id)
-        elif self.session.get(Document, run.document_id) is None:
-            self.session.add(
-                Document(
-                    id=run.document_id,
-                    filename=None,
-                    content_type="application/octet-stream",
-                    source_hash=run.document_id,
-                    page_count=0,
+        else:
+            if self.session.get(Document, run.document_id) is None:
+                self.session.add(
+                    Document(
+                        id=run.document_id,
+                        filename=run.source_filename,
+                        content_type=infer_content_type(run.source_filename),
+                        source_hash=run.document_id,
+                        page_count=0,
+                    )
                 )
-            )
+            extraction_id = self._save_run_extraction(run)
+            validation_id = self._save_run_validation(run, extraction_id=extraction_id)
+            self._save_run_decision(run, validation_id=validation_id)
 
         existing = self.session.scalar(
             select(PipelineRunRecord).where(PipelineRunRecord.run_id == str(run.run_id))
@@ -109,8 +113,9 @@ class PipelineRunRepository:
         existing.decision_details = (
             decision.model_dump(mode="json") if decision is not None else None
         )
-        if state is not None:
+        if extraction_id is not None:
             existing.extraction_id = extraction_id
+        if validation_id is not None:
             existing.validation_id = validation_id
         existing.started_at = run.started_at
         existing.completed_at = run.completed_at
@@ -162,8 +167,55 @@ class PipelineRunRepository:
             )
         return extraction_id
 
+    def _save_run_extraction(self, run: PipelineRun) -> str | None:
+        extraction = run.extraction_result
+        if extraction is None:
+            return None
+
+        extraction_id = extraction.raw_response_id
+        if self.session.get(Extraction, extraction_id) is None:
+            self.session.add(
+                Extraction(
+                    id=extraction_id,
+                    document_id=extraction.document_id,
+                    model_used=extraction.model_used,
+                    latency_ms=extraction.latency_ms,
+                    cost_usd=extraction.cost_usd,
+                    raw_response_id=extraction.raw_response_id,
+                    payload=extraction.model_dump(mode="json"),
+                )
+            )
+        return extraction_id
+
     def _save_validation(self, state: "PipelineState", *, extraction_id: str | None) -> str | None:
         validation = state.get("validation_result")
+        if validation is None or extraction_id is None:
+            return None
+
+        validation_id = f"{extraction_id}:{validation.customer_id}:{validation.rule_set_version}"
+        if self.session.get(Validation, validation_id) is None:
+            self.session.add(
+                Validation(
+                    id=validation_id,
+                    extraction_id=extraction_id,
+                    customer_id=validation.customer_id,
+                    rule_set_version=validation.rule_set_version,
+                    overall_status=validation.overall_status.value,
+                    validator_confidence=validation.validator_confidence,
+                    field_results=[
+                        field.model_dump(mode="json") for field in validation.field_results
+                    ],
+                )
+            )
+        return validation_id
+
+    def _save_run_validation(
+        self,
+        run: PipelineRun,
+        *,
+        extraction_id: str | None,
+    ) -> str | None:
+        validation = run.validation_result
         if validation is None or extraction_id is None:
             return None
 
@@ -189,6 +241,30 @@ class PipelineRunRepository:
         if decision is None or validation_id is None:
             # Decision is already stored in PipelineRunRecord.decision_details
             # Only save to Decision table if validation exists (for relational integrity)
+            return None
+
+        decision_id = f"{validation_id}:{decision.decision.value}"
+        if self.session.get(Decision, decision_id) is None:
+            self.session.add(
+                Decision(
+                    id=decision_id,
+                    validation_id=validation_id,
+                    decision=decision.decision.value,
+                    reasoning=decision.reasoning,
+                    drafted_message=decision.drafted_message,
+                    risk_flags=decision.risk_flags,
+                )
+            )
+        return decision_id
+
+    def _save_run_decision(
+        self,
+        run: PipelineRun,
+        *,
+        validation_id: str | None,
+    ) -> str | None:
+        decision = run.router_decision
+        if decision is None or validation_id is None:
             return None
 
         decision_id = f"{validation_id}:{decision.decision.value}"
@@ -252,6 +328,27 @@ class ShipmentRepository:
         if record is None:
             raise LookupError(f"Shipment not found: {shipment_id}")
         return shipment_from_record(record)
+
+    def find_by_thread_references(
+        self,
+        *,
+        customer_id: str,
+        message_ids: set[str],
+    ) -> Shipment | None:
+        if not message_ids:
+            return None
+        records = self.session.scalars(
+            select(ShipmentRecord)
+            .where(ShipmentRecord.customer_id == customer_id)
+            .order_by(ShipmentRecord.triggered_at.desc())
+        ).all()
+        for record in records:
+            known_message_ids = set(record.references or [])
+            if record.original_message_id:
+                known_message_ids.add(record.original_message_id)
+            if known_message_ids & message_ids:
+                return shipment_from_record(record)
+        return None
 
     def delete_shipment(self, shipment_id: str) -> None:
         record = self.session.get(ShipmentRecord, shipment_id)

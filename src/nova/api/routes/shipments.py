@@ -158,6 +158,7 @@ async def simulate_uploaded_mail(
     filenames: Annotated[list[str], Form()],
     files: Annotated[list[UploadFile], File()],
     email_id: Annotated[str | None, Form()] = None,
+    in_reply_to: Annotated[str | None, Form()] = None,
 ) -> LocalMailDelivery:
     if len(files) != len(filenames):
         raise ApiError(
@@ -180,6 +181,7 @@ async def simulate_uploaded_mail(
         customer_id=customer_id,
         body=body,
         attachments=attachments,
+        in_reply_to=in_reply_to.strip() if in_reply_to else None,
     )
 
 
